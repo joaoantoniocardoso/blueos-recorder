@@ -6,10 +6,18 @@ use tracing::*;
 
 pub struct ChannelDescriptor {
     pub topic: String,
-    pub schema_name: String,
-    pub schema_encoding: SchemaEncoding,
-    pub schema_content: String,
+    pub schema: Option<SchemaDescriptor>,
     pub message_encoding: MessageEncoding,
+}
+
+pub struct SchemaDescriptor {
+    pub encoding: SchemaEncoding,
+    pub content: Option<SchemaDescriptorContent>,
+}
+
+pub struct SchemaDescriptorContent {
+    pub name: String,
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,9 +57,13 @@ impl ChannelDescriptor {
                 };
                 Some(ChannelDescriptor {
                     topic: topic.to_owned(),
-                    schema_name: schema_name.to_owned(),
-                    schema_encoding: SchemaEncoding::Ros2Msg,
-                    schema_content,
+                    schema: Some(SchemaDescriptor {
+                        encoding: SchemaEncoding::Ros2Msg,
+                        content: Some(SchemaDescriptorContent {
+                            name: schema_name.to_owned(),
+                            data: schema_data,
+                        }),
+                    }),
                     message_encoding: MessageEncoding::Cdr,
                 })
             }
@@ -75,9 +87,13 @@ impl ChannelDescriptor {
                 let schema_content = create_schema(&value).to_string();
                 Some(ChannelDescriptor {
                     topic: topic.to_owned(),
-                    schema_name,
-                    schema_encoding: SchemaEncoding::JsonSchema,
-                    schema_content,
+                    schema: Some(SchemaDescriptor {
+                        encoding: SchemaEncoding::JsonSchema,
+                        content: Some(SchemaDescriptorContent {
+                            name: schema_name,
+                            data: schema_data,
+                        }),
+                    }),
                     message_encoding: MessageEncoding::Json,
                 })
             }

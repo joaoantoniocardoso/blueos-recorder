@@ -10,6 +10,8 @@ use tracing::*;
 
 use crate::channel_descriptor::ChannelDescriptor;
 
+const NO_SCHEMA_ID: u16 = 0; // "A schema_id of 0 indicates there is no schema for this channel." (https://mcap.dev/spec#channel-op0x04)
+
 pub struct Mcap {
     writer: Option<Writer<BufWriter<File>>>,
     channel: HashMap<String, Channel>,
@@ -66,13 +68,17 @@ impl Mcap {
             return Err(anyhow!("Writer not available"));
         };
 
-        let schema_id = writer
-            .add_schema(
-                &desc.schema_name,
-                desc.schema_encoding.as_str(),
-                desc.schema_content.as_bytes(),
-            )
-            .context("Failed to add MCAP schema")?;
+        let schema_id = match &desc.schema {
+            Some(schema) => match &schema.content {
+                Some(content) => writer.add_schema(
+                    &content.name,
+                    schema.encoding.as_str(),
+                    content.data.as_bytes(),
+                )?,
+                None => NO_SCHEMA_ID, // encoding known, but no definition to register
+            },
+            None => NO_SCHEMA_ID,
+        };
 
         let channel_id = writer
             .add_channel(
