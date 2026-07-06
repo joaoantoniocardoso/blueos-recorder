@@ -17,8 +17,7 @@ use zenoh::pubsub::Publisher;
 use crate::service::SystemAndComponent;
 
 use self::{
-    camera::{CameraDiscoverer, VideoStream},
-    vehicle::VehicleArmGate,
+    camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, vehicle::VehicleArmGate,
 };
 
 pub const RAW_MAVLINK_OUT_TOPIC: &str = "mavlink_raw/out";
