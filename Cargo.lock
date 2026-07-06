@@ -342,7 +342,7 @@ dependencies = [
  "clap",
  "foxglove",
  "include_dir",
- "mavlink",
+ "mavlink 0.13.2",
  "mavlink-codec",
  "mcap 0.25.0",
  "once_cell",
@@ -400,9 +400,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.11.1"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "cc"
@@ -1300,9 +1300,9 @@ checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.12"
+version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
+checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "typenum",
 ]
@@ -1752,12 +1752,25 @@ version = "0.13.2"
 source = "git+https://github.com/mavlink/rust-mavlink?rev=5f2ecbe856a02e7bd17f43de63c8136db7947715#5f2ecbe856a02e7bd17f43de63c8136db7947715"
 dependencies = [
  "bitflags 1.3.2",
- "mavlink-bindgen",
- "mavlink-core",
+ "mavlink-bindgen 0.13.2",
+ "mavlink-core 0.13.2",
  "num-derive",
  "num-traits",
  "serde",
  "serde_arrays",
+]
+
+[[package]]
+name = "mavlink"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef539c358c31f69d47816dac709eebbcb733166ae1bcdeeb4463383c042e3e7c"
+dependencies = [
+ "bitflags 2.13.0",
+ "mavlink-bindgen 0.18.0",
+ "mavlink-core 0.18.0",
+ "num-derive",
+ "num-traits",
 ]
 
 [[package]]
@@ -1768,9 +1781,23 @@ dependencies = [
  "crc-any",
  "lazy_static",
  "proc-macro2",
- "quick-xml",
+ "quick-xml 0.36.2",
  "quote",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mavlink-bindgen"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "055c957f9fe541226e5b6f0a8aef09b81b9ac865bfc2d083bd6440ed1692602f"
+dependencies = [
+ "crc-any",
+ "proc-macro2",
+ "quick-xml 0.39.4",
+ "quote",
+ "regex",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1780,7 +1807,8 @@ dependencies = [
  "bytes",
  "cc",
  "log",
- "mavlink",
+ "mavlink 0.18.0",
+ "mavlink-bindgen 0.18.0",
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio-util",
@@ -1795,7 +1823,17 @@ dependencies = [
  "crc-any",
  "serde",
  "serde_arrays",
- "sha2 0.10.9",
+]
+
+[[package]]
+name = "mavlink-core"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b31cc9f930c7edce0c1933659d405a330a28346cdf087bd283a56a6d72eb3d85"
+dependencies = [
+ "byteorder",
+ "crc-any",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2422,6 +2460,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.39.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2610,6 +2657,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "regex"
+version = "1.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]
