@@ -23,13 +23,13 @@ use crate::service::SystemAndComponent;
 
 use self::{
     camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, frame::decode_mav_message,
-    vehicle::VehicleArmGate,
+    vehicle::VehicleArmGate, worker::VideoRecordingGate,
 };
 
 pub const RAW_MAVLINK_OUT_TOPIC: &str = "mavlink_raw/out";
 pub const RAW_MAVLINK_IN_TOPIC: &str = "mavlink_raw/in";
 
-#[instrument(skip(message), level = "debug")]
+#[instrument(skip(message), level = "trace")]
 pub fn encode(header: MavHeader, message: &MavMessage) -> Vec<u8> {
     let mut bytes = Vec::new();
     if let Err(error) = mavlink::write_v2_msg(&mut bytes, header, message) {
@@ -38,7 +38,14 @@ pub fn encode(header: MavHeader, message: &MavMessage) -> Vec<u8> {
     bytes
 }
 
-#[instrument(skip(params))]
+#[instrument(
+    skip(params),
+    fields(
+        target_system = target.system_id,
+        target_component = target.component_id,
+        command = ?command,
+    ),
+)]
 pub fn encode_command_long(
     source: SystemAndComponent,
     sequence: &mut u8,
@@ -80,7 +87,15 @@ pub(crate) fn mavlink_string(bytes: &[u8]) -> &str {
     std::str::from_utf8(&bytes[..end]).unwrap_or("")
 }
 
-#[instrument(skip_all, level = "trace")]
+#[instrument(
+    skip_all,
+    level = "trace",
+    fields(
+        system_id = tracing::field::Empty,
+        component_id = tracing::field::Empty,
+        message_id = tracing::field::Empty,
+    ),
+)]
 pub async fn handle_mavlink_packet(
     packet: Packet,
     vehicle_arm: &mut VehicleArmGate,
@@ -88,11 +103,17 @@ pub async fn handle_mavlink_packet(
     recording_capable: &mut HashSet<SystemAndComponent>,
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
+    video_recording_gate: &Arc<VideoRecordingGate>,
 ) {
     let msg_id = packet.message_id();
     if !vehicle_arm.is_armed() && !frame::needed_while_disarmed(msg_id) {
         return;
     }
+
+    let span = Span::current();
+    span.record("system_id", *packet.system_id());
+    span.record("component_id", *packet.component_id());
+    span.record("message_id", msg_id);
 
     match msg_id {
         id if id == HEARTBEAT_DATA::ID => {
@@ -150,6 +171,7 @@ pub async fn handle_mavlink_packet(
                 &data,
                 recording_capable,
                 video_streams,
+                video_recording_gate,
             );
         }
         id if id == COMMAND_LONG_DATA::ID => {
@@ -160,7 +182,7 @@ pub async fn handle_mavlink_packet(
             let MavMessage::COMMAND_LONG(data) = message else {
                 return;
             };
-            camera::on_command_long(&data, video_streams, publisher);
+            camera::on_command_long(&data, video_streams, publisher).await;
         }
         _ => trace!("Message skipped"),
     }

@@ -15,7 +15,10 @@ pub use stream::VideoStream;
 use tracing::*;
 use zenoh::pubsub::Publisher;
 
-use crate::{mavlink::mavlink_string, service::SystemAndComponent};
+use crate::{
+    mavlink::{mavlink_string, worker::VideoRecordingGate},
+    service::SystemAndComponent,
+};
 
 #[instrument(skip(video_streams, data, publisher))]
 #[allow(deprecated)]
@@ -28,6 +31,17 @@ pub(crate) async fn on_command_long(
         system_id: data.target_system,
         component_id: data.target_component,
     };
+
+    let is_recording_command = matches!(
+        data.command,
+        MavCmd::MAV_CMD_VIDEO_START_CAPTURE
+            | MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE
+            | MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS
+    );
+
+    if !is_recording_command {
+        return;
+    }
 
     let Some(stream) = video_stream_for_camera(video_streams, target) else {
         return;
@@ -99,12 +113,13 @@ pub(crate) fn on_camera_information(
     }
 }
 
-#[instrument(skip(recording_capable, video_streams, data))]
+#[instrument(skip(recording_capable, video_streams, data, camera, video_recording_gate))]
 pub(crate) fn on_video_stream_information(
     camera: SystemAndComponent,
     data: &VIDEO_STREAM_INFORMATION_DATA,
     recording_capable: &HashSet<SystemAndComponent>,
     video_streams: &mut HashMap<String, VideoStream>,
+    video_recording_gate: &Arc<VideoRecordingGate>,
 ) {
     if !recording_capable.contains(&camera) {
         return;
@@ -123,5 +138,9 @@ pub(crate) fn on_video_stream_information(
     }
 
     info!(stream_topic = %topic, "Registering video stream");
-    video_streams.insert(topic.clone(), VideoStream::new(topic, camera));
+    video_recording_gate.register(&topic);
+    video_streams.insert(
+        topic.clone(),
+        VideoStream::new(topic, camera, video_recording_gate.clone()),
+    );
 }

@@ -11,12 +11,13 @@ use tracing::*;
 use zenoh::pubsub::Publisher;
 
 use super::super::encode;
-use crate::service::SystemAndComponent;
+use crate::{mavlink::worker::VideoRecordingGate, service::SystemAndComponent};
 
 pub struct VideoStream {
     pub topic: String,
     pub camera: SystemAndComponent,
     pub is_recording: bool,
+    recording_gate: Arc<VideoRecordingGate>,
     recording_start: Option<Instant>,
     sequence: u8,
     status_task: Option<tokio::task::JoinHandle<()>>,
@@ -29,11 +30,16 @@ impl Drop for VideoStream {
 }
 
 impl VideoStream {
-    pub(super) fn new(topic: String, camera: SystemAndComponent) -> Self {
+    pub(super) fn new(
+        topic: String,
+        camera: SystemAndComponent,
+        recording_gate: Arc<VideoRecordingGate>,
+    ) -> Self {
         Self {
             topic,
             camera,
             is_recording: false,
+            recording_gate,
             recording_start: None,
             sequence: 0,
             status_task: None,
@@ -99,6 +105,7 @@ impl VideoStream {
         match command {
             MavCmd::MAV_CMD_VIDEO_START_CAPTURE => {
                 self.is_recording = true;
+                self.recording_gate.set_recording(&self.topic, true);
                 self.recording_start = Some(Instant::now());
 
                 let status_hz = params[1].clamp(1.0, 10.0);
@@ -117,6 +124,7 @@ impl VideoStream {
             }
             MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE => {
                 self.is_recording = false;
+                self.recording_gate.set_recording(&self.topic, false);
                 self.recording_start = None;
                 self.abort_status_task();
 
