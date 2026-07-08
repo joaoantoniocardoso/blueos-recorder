@@ -19,7 +19,7 @@ use crate::{mavlink::mavlink_string, service::SystemAndComponent};
 
 #[instrument(skip(video_streams, data, publisher))]
 #[allow(deprecated)]
-pub fn on_command_long(
+pub(crate) async fn on_command_long(
     data: &COMMAND_LONG_DATA,
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
@@ -47,7 +47,7 @@ pub fn on_command_long(
         MavCmd::MAV_CMD_VIDEO_START_CAPTURE
         | MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE
         | MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS => {
-            stream.handle_command(data.command, params, publisher);
+            stream.handle_command(data.command, params, publisher).await;
         }
         _ => {}
     }
