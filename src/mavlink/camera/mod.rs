@@ -6,16 +6,16 @@ use std::{
     sync::Arc,
 };
 
-use discoverer::CameraDiscoverer;
+pub use discoverer::CameraDiscoverer;
 use mavlink::ardupilotmega::{
     CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, CameraCapFlags, MavCmd,
     VIDEO_STREAM_INFORMATION_DATA,
 };
-use stream::VideoStream;
+pub use stream::VideoStream;
 use tracing::*;
 use zenoh::pubsub::Publisher;
 
-use crate::service::SystemAndComponent;
+use crate::{mavlink::mavlink_string, service::SystemAndComponent};
 
 #[instrument(skip(video_streams, data, publisher))]
 #[allow(deprecated)]
@@ -110,13 +110,11 @@ pub(crate) fn on_video_stream_information(
         return;
     }
 
-    let name = match data.name.to_str() {
-        Ok(name) => name,
-        Err(error) => {
-            warn!(%error, "Invalid video stream name");
-            return;
-        }
-    };
+    let name = mavlink_string(&data.name);
+    if name.is_empty() {
+        warn!("Invalid video stream name");
+        return;
+    }
 
     let topic = stream::video_topic_from_name(name);
 

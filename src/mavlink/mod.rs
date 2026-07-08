@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod frame;
 pub mod vehicle;
 
 use std::{
@@ -7,9 +8,11 @@ use std::{
 };
 
 use ::mavlink::{
-    MavHeader,
-    ardupilotmega::{COMMAND_LONG_DATA, MavCmd, MavComponent, MavMessage, MavType},
-    peek_reader::PeekReader,
+    MavHeader, MessageData,
+    ardupilotmega::{
+        CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, HEARTBEAT_DATA, MavCmd, MavComponent,
+        MavMessage, MavType, VIDEO_STREAM_INFORMATION_DATA,
+    },
 };
 use tracing::*;
 use zenoh::pubsub::Publisher;
@@ -17,20 +20,12 @@ use zenoh::pubsub::Publisher;
 use crate::service::SystemAndComponent;
 
 use self::{
-    camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, vehicle::VehicleArmGate,
+    camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, frame::decode_mav_message,
+    vehicle::VehicleArmGate,
 };
 
 pub const RAW_MAVLINK_OUT_TOPIC: &str = "mavlink_raw/out";
 pub const RAW_MAVLINK_IN_TOPIC: &str = "mavlink_raw/in";
-
-#[instrument(skip_all, level = "trace")]
-pub fn decode<R>(bytes: R) -> Result<(MavHeader, MavMessage), mavlink::error::MessageReadError>
-where
-    R: std::io::Read,
-{
-    let mut reader = PeekReader::new(bytes);
-    mavlink::read_any_msg(&mut reader)
-}
 
 #[instrument(skip(message), level = "debug")]
 pub fn encode(header: MavHeader, message: &MavMessage) -> Vec<u8> {
@@ -75,6 +70,14 @@ pub fn encode_command_long(
     encode(header, &message)
 }
 
+pub(crate) fn mavlink_string(bytes: &[u8]) -> &str {
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    std::str::from_utf8(&bytes[..end]).unwrap_or("")
+}
+
 #[instrument(skip_all, level = "trace")]
 pub async fn handle_mavlink_message(
     bytes: &[u8],
@@ -84,38 +87,44 @@ pub async fn handle_mavlink_message(
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
 ) {
-    let (header, message) = match decode(bytes) {
-        Ok(packet) => packet,
-        Err(error) => {
-            warn!("Failed decoding mavlink raw message: {error:?}");
-            return;
-        }
+    let mut decoder = frame::FrameDecoder::default();
+    let Some(packet) = decoder.decode(bytes) else {
+        return;
     };
 
-    match message {
-        MavMessage::HEARTBEAT(data)
-            if header.component_id == MavComponent::MAV_COMP_ID_AUTOPILOT1 as u8 =>
-        {
-            trace!("Message decoded: {header:?}, {data:?}");
+    let msg_id = packet.message_id();
 
-            let _state = vehicle::on_heartbeat(vehicle_arm, &data);
-        }
-        MavMessage::HEARTBEAT(data) if data.mavtype == MavType::MAV_TYPE_CAMERA => {
-            trace!("Message decoded: {header:?}, {data:?}");
-
-            if let Some(camera) = camera::on_heartbeat(
-                discoverer,
-                SystemAndComponent {
-                    system_id: header.system_id,
-                    component_id: header.component_id,
-                },
-            ) {
-                discoverer.request_for_camera(camera).await;
+    match msg_id {
+        id if id == HEARTBEAT_DATA::ID => {
+            let Ok((header, message)) = decode_mav_message(&packet) else {
+                warn!("Failed decoding HEARTBEAT");
+                return;
+            };
+            let MavMessage::HEARTBEAT(data) = message else {
+                return;
+            };
+            if header.component_id == MavComponent::MAV_COMP_ID_AUTOPILOT1 as u8 {
+                let _state = vehicle::on_heartbeat(vehicle_arm, &data);
+            } else if data.mavtype == MavType::MAV_TYPE_CAMERA {
+                if let Some(camera) = camera::on_heartbeat(
+                    discoverer,
+                    SystemAndComponent {
+                        system_id: header.system_id,
+                        component_id: header.component_id,
+                    },
+                ) {
+                    discoverer.request_for_camera(camera).await;
+                }
             }
         }
-        MavMessage::CAMERA_INFORMATION(data) => {
-            trace!("Message decoded: {header:?}, {data:?}");
-
+        id if id == CAMERA_INFORMATION_DATA::ID => {
+            let Ok((header, message)) = decode_mav_message(&packet) else {
+                warn!("Failed decoding CAMERA_INFORMATION");
+                return;
+            };
+            let MavMessage::CAMERA_INFORMATION(data) = message else {
+                return;
+            };
             camera::on_camera_information(
                 SystemAndComponent {
                     system_id: header.system_id,
@@ -125,9 +134,14 @@ pub async fn handle_mavlink_message(
                 recording_capable,
             );
         }
-        MavMessage::VIDEO_STREAM_INFORMATION(data) => {
-            trace!("Message decoded: {header:?}, {data:?}");
-
+        id if id == VIDEO_STREAM_INFORMATION_DATA::ID => {
+            let Ok((header, message)) = decode_mav_message(&packet) else {
+                warn!("Failed decoding VIDEO_STREAM_INFORMATION");
+                return;
+            };
+            let MavMessage::VIDEO_STREAM_INFORMATION(data) = message else {
+                return;
+            };
             camera::on_video_stream_information(
                 SystemAndComponent {
                     system_id: header.system_id,
@@ -138,9 +152,14 @@ pub async fn handle_mavlink_message(
                 video_streams,
             );
         }
-        MavMessage::COMMAND_LONG(data) => {
-            trace!("Message decoded: {header:?}, {data:?}");
-
+        id if id == COMMAND_LONG_DATA::ID => {
+            let Ok((_, message)) = decode_mav_message(&packet) else {
+                warn!("Failed decoding COMMAND_LONG");
+                return;
+            };
+            let MavMessage::COMMAND_LONG(data) = message else {
+                return;
+            };
             camera::on_command_long(&data, video_streams, publisher);
         }
         _ => trace!("Message skipped"),
