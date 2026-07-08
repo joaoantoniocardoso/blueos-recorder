@@ -28,6 +28,7 @@ struct CameraDiscovererState {
 }
 
 impl CameraDiscoverer {
+    #[instrument(skip(publisher))]
     pub fn new(publisher: Arc<Publisher<'static>>) -> Self {
         let state = Arc::new(Mutex::new(CameraDiscovererState::new()));
 
@@ -41,20 +42,28 @@ impl CameraDiscoverer {
                     interval.tick().await;
 
                     let cameras = {
+                        let _tick_span = info_span!("camera_discovery_tick").entered();
                         let state = state.lock().expect("camera discoverer state poisoned");
                         state.cameras.clone()
                     };
 
                     for camera in cameras {
+                        let system_id = camera.system_id;
+                        let component_id = camera.component_id;
                         let messages = {
                             let mut state = state.lock().expect("camera discoverer state poisoned");
                             state.encode_discovery_requests(camera)
                         };
 
                         for bytes in messages {
-                            if let Err(error) = publisher.put(bytes).await {
-                                warn!(%error, ?camera, "Failed to publish MAVLink discovery command");
+                            let span = debug_span!("discovery_request", system_id, component_id);
+                            async {
+                                if let Err(error) = publisher.put(bytes).await {
+                                    warn!(%error, "Failed to publish MAVLink discovery command");
+                                }
                             }
+                            .instrument(span)
+                            .await;
                         }
                     }
                 }
@@ -64,6 +73,7 @@ impl CameraDiscoverer {
         Self { state, publisher }
     }
 
+    #[instrument(skip(self, camera))]
     pub async fn request_for_camera(&self, camera: SystemAndComponent) {
         let messages = {
             let mut state = self.state.lock().expect("camera discoverer state poisoned");
@@ -72,11 +82,12 @@ impl CameraDiscoverer {
 
         for bytes in messages {
             if let Err(error) = self.publisher.put(bytes).await {
-                warn!(%error, ?camera, "Failed to publish MAVLink discovery command");
+                warn!(%error, "Failed to publish MAVLink discovery command");
             }
         }
     }
 
+    #[instrument(skip(self, camera))]
     pub(super) fn register_camera(&self, camera: SystemAndComponent) -> bool {
         let mut state = self.state.lock().expect("camera discoverer state poisoned");
         state.cameras.insert(camera)
