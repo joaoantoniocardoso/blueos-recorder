@@ -6,12 +6,12 @@ use std::{
     sync::Arc,
 };
 
-pub use discoverer::CameraDiscoverer;
+use discoverer::CameraDiscoverer;
 use mavlink::ardupilotmega::{
     CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, CameraCapFlags, MavCmd,
     VIDEO_STREAM_INFORMATION_DATA,
 };
-pub use stream::VideoStream;
+use stream::VideoStream;
 use tracing::*;
 use zenoh::pubsub::Publisher;
 
@@ -20,13 +20,25 @@ use crate::{
     service::SystemAndComponent,
 };
 
-#[instrument(skip(video_streams, data, publisher))]
+#[instrument(
+    skip(video_streams, data, publisher),
+    fields(
+        target_system = tracing::field::Empty,
+        target_component = tracing::field::Empty,
+        command = tracing::field::Empty,
+    ),
+)]
 #[allow(deprecated)]
 pub(crate) async fn on_command_long(
     data: &COMMAND_LONG_DATA,
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
 ) {
+    let span = Span::current();
+    span.record("target_system", data.target_system);
+    span.record("target_component", data.target_component);
+    span.record("command", tracing::field::debug(&data.command));
+
     let target = SystemAndComponent {
         system_id: data.target_system,
         component_id: data.target_component,
@@ -44,8 +56,19 @@ pub(crate) async fn on_command_long(
     }
 
     let Some(stream) = video_stream_for_camera(video_streams, target) else {
+        let registered: Vec<_> = video_streams.keys().cloned().collect();
+        debug!(
+            ?registered,
+            "Recording command ignored: no registered video stream for target camera"
+        );
         return;
     };
+
+    debug!(
+        stream_topic = %stream.topic,
+        is_recording = stream.is_recording,
+        "Dispatching camera recording command"
+    );
 
     let params = [
         data.param1,
@@ -67,6 +90,7 @@ pub(crate) async fn on_command_long(
     }
 }
 
+#[instrument(skip_all, level = "trace")]
 fn video_stream_for_camera(
     video_streams: &mut HashMap<String, VideoStream>,
     camera: SystemAndComponent,
@@ -113,7 +137,13 @@ pub(crate) fn on_camera_information(
     }
 }
 
-#[instrument(skip(recording_capable, video_streams, data, camera, video_recording_gate))]
+#[instrument(
+    skip(recording_capable, video_streams, data, camera, video_recording_gate),
+    fields(
+        stream_name = tracing::field::Empty,
+        stream_topic = tracing::field::Empty,
+    ),
+)]
 pub(crate) fn on_video_stream_information(
     camera: SystemAndComponent,
     data: &VIDEO_STREAM_INFORMATION_DATA,
@@ -122,6 +152,10 @@ pub(crate) fn on_video_stream_information(
     video_recording_gate: &Arc<VideoRecordingGate>,
 ) {
     if !recording_capable.contains(&camera) {
+        debug!(
+            stream_name = %mavlink_string(&data.name),
+            "Ignoring VIDEO_STREAM_INFORMATION: camera not recording capable"
+        );
         return;
     }
 
@@ -131,13 +165,18 @@ pub(crate) fn on_video_stream_information(
         return;
     }
 
+    let span = Span::current();
+    span.record("stream_name", name);
+
     let topic = stream::video_topic_from_name(name);
+    span.record("stream_topic", topic.as_str());
 
     if video_streams.contains_key(&topic) {
-        return; // Already registered
+        trace!("Video stream already registered");
+        return;
     }
 
-    info!(stream_topic = %topic, "Registering video stream");
+    info!("Registering video stream");
     video_recording_gate.register(&topic);
     video_streams.insert(
         topic.clone(),

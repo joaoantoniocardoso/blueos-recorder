@@ -7,13 +7,14 @@ use mavlink::{
     MavHeader,
     ardupilotmega::{CAMERA_CAPTURE_STATUS_DATA, COMMAND_ACK_DATA, MavCmd, MavMessage, MavResult},
 };
-use tracing::*;
+use tracing::{Instrument, *};
 use zenoh::pubsub::Publisher;
 
 use super::super::encode;
 use crate::{mavlink::worker::VideoRecordingGate, service::SystemAndComponent};
 
 pub struct VideoStream {
+    #[allow(dead_code)]
     pub topic: String,
     pub camera: SystemAndComponent,
     pub is_recording: bool,
@@ -30,6 +31,7 @@ impl Drop for VideoStream {
 }
 
 impl VideoStream {
+    #[instrument(skip_all, level = "debug", fields(stream_topic = %topic))]
     pub(super) fn new(
         topic: String,
         camera: SystemAndComponent,
@@ -52,6 +54,7 @@ impl VideoStream {
         sequence
     }
 
+    #[instrument(skip(self, publisher), fields(interval_ms))]
     fn spawn_status_task(&mut self, publisher: Arc<Publisher<'static>>, interval_ms: u64) {
         self.abort_status_task();
 
@@ -81,9 +84,14 @@ impl VideoStream {
                     );
                     sequence = sequence.wrapping_add(1);
 
-                    if let Err(error) = publisher.put(bytes).await {
-                        warn!(%error, "Failed to publish capture status");
+                    let span = debug_span!("capture_status_tick", system_id, component_id,);
+                    async {
+                        if let Err(error) = publisher.put(bytes).await {
+                            warn!(%error, "Failed to publish capture status");
+                        }
                     }
+                    .instrument(span)
+                    .await;
                 }
             }
         }));
@@ -95,6 +103,10 @@ impl VideoStream {
         }
     }
 
+    #[instrument(
+        skip(self, publisher),
+        fields(command = ?command, stream_topic = %self.topic),
+    )]
     #[allow(deprecated)]
     pub(super) async fn handle_command(
         &mut self,
@@ -117,9 +129,10 @@ impl VideoStream {
                     command,
                     MavResult::MAV_RESULT_ACCEPTED,
                 );
-                publish_mavlink(publisher, ack).await;
+                publish_mavlink(publisher, ack, "COMMAND_ACK").await;
 
                 let interval_ms = (1000.0 / status_hz) as u64;
+                debug!(interval_ms, "Starting periodic CAMERA_CAPTURE_STATUS task");
                 self.spawn_status_task(publisher.clone(), interval_ms);
             }
             MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE => {
@@ -136,10 +149,14 @@ impl VideoStream {
                     command,
                     MavResult::MAV_RESULT_ACCEPTED,
                 );
-                publish_mavlink(publisher, ack).await;
+                publish_mavlink(publisher, ack, "COMMAND_ACK").await;
             }
             MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS => {
                 let (video_status, recording_time_ms) = self.capture_status_fields();
+                debug!(
+                    is_recording = self.is_recording,
+                    video_status, recording_time_ms, "Camera capture status requested"
+                );
 
                 let ack = build_command_ack(
                     self.camera,
@@ -147,7 +164,7 @@ impl VideoStream {
                     command,
                     MavResult::MAV_RESULT_ACCEPTED,
                 );
-                publish_mavlink(publisher, ack).await;
+                publish_mavlink(publisher, ack, "COMMAND_ACK").await;
 
                 let status = build_camera_capture_status(
                     self.camera,
@@ -155,7 +172,7 @@ impl VideoStream {
                     video_status,
                     recording_time_ms,
                 );
-                publish_mavlink(publisher, status).await;
+                publish_mavlink(publisher, status, "CAMERA_CAPTURE_STATUS").await;
             }
             _ => trace!("Unhandled recording command"),
         }
@@ -175,7 +192,9 @@ impl VideoStream {
     }
 }
 
-async fn publish_mavlink(publisher: &Arc<Publisher<'static>>, bytes: Vec<u8>) {
+#[instrument(skip(publisher, bytes), fields(message = message, bytes = bytes.len()))]
+async fn publish_mavlink(publisher: &Arc<Publisher<'static>>, bytes: Vec<u8>, message: &str) {
+    debug!("Publishing MAVLink reply");
     if let Err(error) = publisher.put(bytes).await {
         warn!(%error, "Failed to publish MAVLink message");
     }
@@ -189,6 +208,7 @@ pub(super) fn video_topic_from_name(name: &str) -> String {
     format!("video/{sanitized_stream_name}/stream")
 }
 
+#[instrument(skip_all, level = "trace")]
 fn build_command_ack(
     camera: SystemAndComponent,
     sequence: u8,
@@ -208,6 +228,7 @@ fn build_command_ack(
     )
 }
 
+#[instrument(skip_all, level = "trace")]
 fn build_camera_capture_status(
     camera: SystemAndComponent,
     sequence: u8,
@@ -228,6 +249,7 @@ fn build_camera_capture_status(
     )
 }
 
+#[instrument(skip_all, level = "trace")]
 fn camera_header(camera: SystemAndComponent, sequence: u8) -> MavHeader {
     MavHeader {
         system_id: camera.system_id,
