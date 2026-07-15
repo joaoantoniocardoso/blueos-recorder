@@ -1,21 +1,27 @@
 pub mod camera;
 pub mod vehicle;
 
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use ::mavlink::{
     MavHeader, MavlinkVersion, MessageData,
     dialects::ardupilotmega::{
         CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, HEARTBEAT_DATA, MavCmd, MavComponent,
-        MavMessage, MavType,
+        MavMessage, MavType, VIDEO_STREAM_INFORMATION_DATA,
     },
 };
 use mavlink_codec::PacketRef;
 use tracing::*;
+use zenoh::pubsub::Publisher;
 
 use crate::service::SystemAndComponent;
 
-use self::{camera::discoverer::CameraDiscoverer, vehicle::VehicleArmGate};
+use self::{
+    camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, vehicle::VehicleArmGate,
+};
 
 pub const RAW_MAVLINK_OUT_TOPIC: &str = "mavlink_raw/out";
 pub const RAW_MAVLINK_IN_TOPIC: &str = "mavlink_raw/in";
@@ -90,6 +96,8 @@ pub async fn handle_mavlink_message(
     vehicle_arm: &mut VehicleArmGate,
     discoverer: &CameraDiscoverer,
     recording_capable: &mut HashSet<SystemAndComponent>,
+    video_streams: &mut HashMap<String, VideoStream>,
+    publisher: &Arc<Publisher<'static>>,
 ) {
     let Some(packet) = PacketRef::new(bytes) else {
         trace!("Not a MAVLink frame");
@@ -122,6 +130,22 @@ pub async fn handle_mavlink_message(
                 component_id: *packet.component_id(),
             };
             camera::on_camera_information(source, &data, recording_capable);
+        }
+        id if id == VIDEO_STREAM_INFORMATION_DATA::ID => {
+            let Some(data) = decode::<VIDEO_STREAM_INFORMATION_DATA>(&packet) else {
+                return;
+            };
+            let source = SystemAndComponent {
+                system_id: *packet.system_id(),
+                component_id: *packet.component_id(),
+            };
+            camera::on_video_stream_information(source, &data, recording_capable, video_streams);
+        }
+        id if id == COMMAND_LONG_DATA::ID => {
+            let Some(data) = decode::<COMMAND_LONG_DATA>(&packet) else {
+                return;
+            };
+            camera::on_command_long(&data, video_streams, publisher);
         }
         _ => trace!("Message skipped"),
     }

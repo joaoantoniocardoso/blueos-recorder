@@ -1,17 +1,21 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio_graceful_shutdown::SubsystemHandle;
 use tracing::*;
-use zenoh::{Config, Session, handlers::FifoChannelHandler, pubsub::Subscriber, sample::Sample};
+use zenoh::{
+    Config, Session, handlers::FifoChannelHandler, pubsub::Publisher, pubsub::Subscriber,
+    sample::Sample,
+};
 
 use crate::{
     channel_descriptor::ChannelDescriptor,
     mavlink::{
-        self, RAW_MAVLINK_OUT_TOPIC, camera::discoverer::CameraDiscoverer, vehicle::VehicleArmGate,
+        self, RAW_MAVLINK_OUT_TOPIC, camera::discoverer::CameraDiscoverer,
+        camera::stream::VideoStream, vehicle::VehicleArmGate,
     },
     mcap::Mcap,
 };
@@ -19,11 +23,13 @@ use crate::{
 pub struct Service {
     #[allow(dead_code)]
     session: Session,
+    mavlink_publisher: Arc<Publisher<'static>>,
     subscriber: Subscriber<FifoChannelHandler<Sample>>,
     mcap: Mcap,
     vehicle_arm: VehicleArmGate,
     camera_discoverer: CameraDiscoverer,
     recording_capable_cameras: HashSet<SystemAndComponent>,
+    video_streams: HashMap<String, VideoStream>,
     schema_path: Option<std::path::PathBuf>,
 }
 
@@ -76,11 +82,13 @@ impl Service {
         let mcap = Mcap::try_new(&path).unwrap();
         Self {
             session,
+            mavlink_publisher: mavlink_publisher.clone(),
             subscriber,
             mcap,
             vehicle_arm: VehicleArmGate::new(),
             camera_discoverer: CameraDiscoverer::new(mavlink_publisher),
             recording_capable_cameras: HashSet::new(),
+            video_streams: HashMap::new(),
             schema_path,
         }
     }
@@ -115,6 +123,8 @@ impl Service {
                     &mut self.vehicle_arm,
                     &self.camera_discoverer,
                     &mut self.recording_capable_cameras,
+                    &mut self.video_streams,
+                    &self.mavlink_publisher,
                 )
                 .await;
             }
@@ -170,11 +180,12 @@ impl Service {
     }
 
     fn should_record_sample(&self, topic: &str) -> bool {
-        if topic.starts_with("mavlink/")
-            || topic.starts_with("mavlink_raw/")
-            || topic.starts_with("video/")
-        {
+        if topic.starts_with("mavlink/") || topic.starts_with("mavlink_raw/") {
             self.vehicle_arm.is_armed()
+        } else if topic.starts_with("video/") {
+            self.video_streams
+                .get(topic)
+                .is_some_and(|stream| stream.is_recording)
         } else {
             true
         }
