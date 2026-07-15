@@ -10,7 +10,7 @@ use zenoh::{Config, Session, handlers::FifoChannelHandler, pubsub::Subscriber, s
 use crate::{
     channel_descriptor::ChannelDescriptor,
     mavlink::{self, RAW_MAVLINK_OUT_TOPIC, worker::MavlinkWorker},
-    mcap::{Mcap, McapWriteConfig},
+    mcap::{Mcap, McapWriteConfig, RecordPayload},
 };
 
 pub struct Service {
@@ -26,6 +26,12 @@ pub struct Service {
 pub struct SystemAndComponent {
     pub system_id: u8,
     pub component_id: u8,
+}
+
+impl RecordPayload for zenoh::bytes::ZBytes {
+    fn bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        self.to_bytes()
+    }
 }
 
 fn generate_filename() -> String {
@@ -69,7 +75,9 @@ impl Service {
         let path = recorder_path.join(generate_filename());
         info!("Opening recording session");
 
-        let mcap = Mcap::try_new(&path, mcap_config).expect("Failed to open MCAP file");
+        let mcap = Mcap::try_new(&path, mcap_config)
+            .await
+            .expect("Failed to open MCAP file");
         let mavlink_worker = MavlinkWorker::new(mavlink_publisher);
         Self {
             session,
@@ -82,7 +90,6 @@ impl Service {
 
     #[instrument(skip_all)]
     pub async fn run(&mut self, subsystem: &mut SubsystemHandle) -> anyhow::Result<()> {
-        let mut last_flush = SystemTime::now();
         info!("Waiting for vehicle to be armed");
         loop {
             let sample = tokio::select! {
@@ -112,46 +119,29 @@ impl Service {
                 continue;
             }
 
-            let new_channel = if self.mcap.has_channel(topic) {
-                None
-            } else {
-                let Some(channel_descriptor) =
-                    ChannelDescriptor::new(topic, encoding, payload, self.schema_path.as_ref())
-                else {
-                    warn!("Failed creating a channel descriptor");
-                    continue;
-                };
-
-                info!("Adding channel");
-                Some(channel_descriptor)
-            };
-
             let now = SystemTime::now();
             let log_time = now.duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
             let publish_time = sample
                 .timestamp()
                 .map(|ts| ts.get_time().as_nanos())
                 .unwrap_or(log_time);
-            if let Err(error) = self.mcap.write_message(
+            if let Err(error) = self.mcap.writer().write_message(
                 topic,
                 log_time,
                 publish_time,
-                &payload.to_bytes(),
-                new_channel,
+                payload.clone(),
+                || ChannelDescriptor::new(topic, encoding, payload, self.schema_path.as_ref()),
             ) {
                 error!(%error, "Failed to write MCAP message");
                 continue;
             }
 
-            if now.duration_since(last_flush).unwrap() > std::time::Duration::from_secs(30) {
-                if let Err(error) = self.mcap.flush() {
-                    error!(%error, "Failed to flush MCAP writer");
-                }
-                last_flush = now;
+            if let Err(error) = self.mcap.flush().await {
+                error!(%error, "Failed to flush MCAP writer");
             }
         }
 
-        if let Err(error) = self.mcap.finish() {
+        if let Err(error) = self.mcap.finish().await {
             error!(%error, "Failed to finish MCAP writer");
         }
 
