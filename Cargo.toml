@@ -10,7 +10,8 @@ clap = { version = "4.5.41", features = ["derive"] }
 foxglove = "0.25.1"
 include_dir = "0.7.4"
 mcap = "0.25.0"
-mavlink = { version = "0.16.2", default-features = false, features = ["std", "ardupilotmega", "serde", "emit-extensions"] }
+mavlink = { version = "0.18.0", default-features = false, features = ["std", "dialect-ardupilotmega"] }
+mavlink-codec = { git = "https://github.com/joaoantoniocardoso/rust-mavlink-codec", rev = "577d04e1a60638b6ccab6729444cdb2e8201d8d8" }
 once_cell = "1.19.0"
 serde_json = "1.0.140"
 serde_json5 = "0.2.1"
