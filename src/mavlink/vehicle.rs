@@ -1,4 +1,4 @@
-use mavlink::ardupilotmega::{HEARTBEAT_DATA, MavModeFlag};
+use mavlink::dialects::ardupilotmega::{HEARTBEAT_DATA, MavModeFlag};
 use tracing::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
