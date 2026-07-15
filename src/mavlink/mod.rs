@@ -1,17 +1,23 @@
+pub mod camera;
 pub mod vehicle;
 
+use std::collections::HashSet;
+
 use ::mavlink::{
-    MavlinkVersion, MessageData,
-    dialects::ardupilotmega::{HEARTBEAT_DATA, MavComponent, MavMessage},
+    MavHeader, MavlinkVersion, MessageData,
+    dialects::ardupilotmega::{
+        CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, HEARTBEAT_DATA, MavCmd, MavComponent,
+        MavMessage, MavType,
+    },
 };
-use mavlink::MavHeader;
 use mavlink_codec::PacketRef;
 use tracing::*;
 
-use self::vehicle::VehicleArmGate;
+use crate::service::SystemAndComponent;
+
+use self::{camera::discoverer::CameraDiscoverer, vehicle::VehicleArmGate};
 
 pub const RAW_MAVLINK_OUT_TOPIC: &str = "mavlink_raw/out";
-#[allow(unused)]
 pub const RAW_MAVLINK_IN_TOPIC: &str = "mavlink_raw/in";
 
 /// CRC-validates a borrowed frame and parses its payload straight into the concrete
@@ -44,24 +50,79 @@ pub fn encode(header: MavHeader, message: &MavMessage) -> Vec<u8> {
     bytes
 }
 
+#[instrument(skip(params))]
+pub fn encode_command_long(
+    source: SystemAndComponent,
+    sequence: &mut u8,
+    target: SystemAndComponent,
+    command: MavCmd,
+    params: [f32; 7],
+) -> Vec<u8> {
+    let header = MavHeader {
+        system_id: source.system_id,
+        component_id: source.component_id,
+        sequence: {
+            let value = *sequence;
+            *sequence = sequence.wrapping_add(1);
+            value
+        },
+    };
+    let message = MavMessage::COMMAND_LONG(COMMAND_LONG_DATA {
+        target_system: target.system_id,
+        target_component: target.component_id,
+        command,
+        confirmation: 0,
+        param1: params[0],
+        param2: params[1],
+        param3: params[2],
+        param4: params[3],
+        param5: params[4],
+        param6: params[5],
+        param7: params[6],
+    });
+
+    encode(header, &message)
+}
+
 #[instrument(skip_all, level = "trace")]
-pub async fn handle_mavlink_message(bytes: &[u8], vehicle_arm: &mut VehicleArmGate) {
-    // Cheap header peek first; CRC-validate only autopilot HEARTBEAT candidates.
+pub async fn handle_mavlink_message(
+    bytes: &[u8],
+    vehicle_arm: &mut VehicleArmGate,
+    discoverer: &CameraDiscoverer,
+    recording_capable: &mut HashSet<SystemAndComponent>,
+) {
     let Some(packet) = PacketRef::new(bytes) else {
         trace!("Not a MAVLink frame");
         return;
     };
-    if packet.message_id() != HEARTBEAT_DATA::ID {
-        trace!("Message skipped");
-        return;
+
+    match packet.message_id() {
+        id if id == HEARTBEAT_DATA::ID => {
+            let Some(data) = decode::<HEARTBEAT_DATA>(&packet) else {
+                return;
+            };
+            let source = SystemAndComponent {
+                system_id: *packet.system_id(),
+                component_id: *packet.component_id(),
+            };
+            if source.component_id == MavComponent::MAV_COMP_ID_AUTOPILOT1 as u8 {
+                let _state = vehicle::on_heartbeat(vehicle_arm, &data);
+            } else if data.mavtype == MavType::MAV_TYPE_CAMERA
+                && let Some(camera) = camera::on_heartbeat(discoverer, source)
+            {
+                discoverer.request_for_camera(camera).await;
+            }
+        }
+        id if id == CAMERA_INFORMATION_DATA::ID => {
+            let Some(data) = decode::<CAMERA_INFORMATION_DATA>(&packet) else {
+                return;
+            };
+            let source = SystemAndComponent {
+                system_id: *packet.system_id(),
+                component_id: *packet.component_id(),
+            };
+            camera::on_camera_information(source, &data, recording_capable);
+        }
+        _ => trace!("Message skipped"),
     }
-    if *packet.component_id() != MavComponent::MAV_COMP_ID_AUTOPILOT1 as u8 {
-        trace!("Non-autopilot HEARTBEAT skipped");
-        return;
-    }
-    let Some(data) = decode::<HEARTBEAT_DATA>(&packet) else {
-        return;
-    };
-    trace!("Message decoded: {data:?}");
-    let _state = vehicle::on_heartbeat(vehicle_arm, &data);
 }
