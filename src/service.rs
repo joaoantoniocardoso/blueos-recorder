@@ -1,35 +1,24 @@
 use std::{
-    collections::{HashMap, HashSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio_graceful_shutdown::SubsystemHandle;
 use tracing::*;
-use zenoh::{
-    Config, Session, handlers::FifoChannelHandler, pubsub::Publisher, pubsub::Subscriber,
-    sample::Sample,
-};
+use zenoh::{Config, Session, handlers::FifoChannelHandler, pubsub::Subscriber, sample::Sample};
 
 use crate::{
     channel_descriptor::ChannelDescriptor,
-    mavlink::{
-        self, RAW_MAVLINK_OUT_TOPIC, camera::discoverer::CameraDiscoverer,
-        camera::stream::VideoStream, vehicle::VehicleArmGate,
-    },
+    mavlink::{self, RAW_MAVLINK_OUT_TOPIC, worker::MavlinkWorker},
     mcap::Mcap,
 };
 
 pub struct Service {
     #[allow(dead_code)]
     session: Session,
-    mavlink_publisher: Arc<Publisher<'static>>,
     subscriber: Subscriber<FifoChannelHandler<Sample>>,
     mcap: Mcap,
-    vehicle_arm: VehicleArmGate,
-    camera_discoverer: CameraDiscoverer,
-    recording_capable_cameras: HashSet<SystemAndComponent>,
-    video_streams: HashMap<String, VideoStream>,
+    mavlink_worker: MavlinkWorker,
     schema_path: Option<std::path::PathBuf>,
 }
 
@@ -80,15 +69,12 @@ impl Service {
         info!("Opening recording session");
 
         let mcap = Mcap::try_new(&path).unwrap();
+        let mavlink_worker = MavlinkWorker::new(mavlink_publisher);
         Self {
             session,
-            mavlink_publisher: mavlink_publisher.clone(),
             subscriber,
             mcap,
-            vehicle_arm: VehicleArmGate::new(),
-            camera_discoverer: CameraDiscoverer::new(mavlink_publisher),
-            recording_capable_cameras: HashSet::new(),
-            video_streams: HashMap::new(),
+            mavlink_worker,
             schema_path,
         }
     }
@@ -118,18 +104,10 @@ impl Service {
             let _sample_span = span.enter();
 
             if topic.starts_with(RAW_MAVLINK_OUT_TOPIC) {
-                mavlink::handle_mavlink_message(
-                    payload.to_bytes().as_ref(),
-                    &mut self.vehicle_arm,
-                    &self.camera_discoverer,
-                    &mut self.recording_capable_cameras,
-                    &mut self.video_streams,
-                    &self.mavlink_publisher,
-                )
-                .await;
+                self.mavlink_worker.try_enqueue(payload);
             }
 
-            if !self.should_record_sample(topic) {
+            if !should_record_sample(&self.mavlink_worker, topic) {
                 continue;
             }
 
@@ -178,16 +156,14 @@ impl Service {
 
         Ok(())
     }
+}
 
-    fn should_record_sample(&self, topic: &str) -> bool {
-        if topic.starts_with("mavlink/") || topic.starts_with("mavlink_raw/") {
-            self.vehicle_arm.is_armed()
-        } else if topic.starts_with("video/") {
-            self.video_streams
-                .get(topic)
-                .is_some_and(|stream| stream.is_recording)
-        } else {
-            true
-        }
+fn should_record_sample(worker: &MavlinkWorker, topic: &str) -> bool {
+    if topic.starts_with("mavlink/") || topic.starts_with("mavlink_raw/") {
+        worker.is_armed()
+    } else if topic.starts_with("video/") {
+        worker.is_video_recording(topic)
+    } else {
+        true
     }
 }
