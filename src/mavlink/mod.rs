@@ -91,6 +91,16 @@ pub fn encode_command_long(
     encode(header, &message)
 }
 
+/// Message ids the worker acts on; mirrors `handle_mavlink_message`'s arms.
+/// Read cheaply from the frame header so the recorder can skip the channel
+/// handoff for the `mavlink_raw/out` traffic the worker ignores.
+pub fn is_handled(msg_id: u32) -> bool {
+    msg_id == HEARTBEAT_DATA::ID
+        || msg_id == CAMERA_INFORMATION_DATA::ID
+        || msg_id == VIDEO_STREAM_INFORMATION_DATA::ID
+        || msg_id == COMMAND_LONG_DATA::ID
+}
+
 #[instrument(skip_all, level = "trace")]
 pub async fn handle_mavlink_message(
     bytes: &[u8],

@@ -6,13 +6,14 @@ use std::{
     },
 };
 
+use mavlink_codec::PacketRef;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::*;
 use zenoh::{bytes::ZBytes, pubsub::Publisher};
 
 use super::{
     camera::discoverer::CameraDiscoverer, camera::stream::VideoStream, handle_mavlink_message,
-    vehicle::VehicleArmGate,
+    is_handled, vehicle::VehicleArmGate,
 };
 
 const MAVLINK_QUEUE_CAPACITY: usize = 512;
@@ -47,6 +48,13 @@ impl MavlinkWorker {
     }
 
     pub fn try_enqueue(&self, payload: &ZBytes) {
+        let bytes = payload.to_bytes();
+        let Some(packet) = PacketRef::new(bytes.as_ref()) else {
+            return;
+        };
+        if !is_handled(packet.message_id()) {
+            return;
+        }
         match self.tx.try_send(payload.clone()) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
