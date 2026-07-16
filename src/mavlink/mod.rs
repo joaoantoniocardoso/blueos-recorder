@@ -1,9 +1,10 @@
 pub mod camera;
 pub mod vehicle;
+pub mod worker;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use ::mavlink::{
@@ -96,7 +97,7 @@ pub async fn handle_mavlink_message(
     vehicle_arm: &mut VehicleArmGate,
     discoverer: &CameraDiscoverer,
     recording_capable: &mut HashSet<SystemAndComponent>,
-    video_streams: &mut HashMap<String, VideoStream>,
+    video_streams: &RwLock<HashMap<String, VideoStream>>,
     publisher: &Arc<Publisher<'static>>,
 ) {
     let Some(packet) = PacketRef::new(bytes) else {
@@ -139,13 +140,18 @@ pub async fn handle_mavlink_message(
                 system_id: *packet.system_id(),
                 component_id: *packet.component_id(),
             };
-            camera::on_video_stream_information(source, &data, recording_capable, video_streams);
+            camera::on_video_stream_information(
+                source,
+                &data,
+                recording_capable,
+                &mut video_streams.write().unwrap(),
+            );
         }
         id if id == COMMAND_LONG_DATA::ID => {
             let Some(data) = decode::<COMMAND_LONG_DATA>(&packet) else {
                 return;
             };
-            camera::on_command_long(&data, video_streams, publisher);
+            camera::on_command_long(&data, &mut video_streams.write().unwrap(), publisher);
         }
         _ => trace!("Message skipped"),
     }
