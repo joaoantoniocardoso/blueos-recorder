@@ -7,7 +7,7 @@ use std::{
 };
 
 use mavlink::dialects::ardupilotmega::{
-    CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, CameraCapFlags, MavCmd,
+    CAMERA_INFORMATION_DATA, COMMAND_LONG_DATA, CameraCapFlags, MavCmd, MavComponent,
     VIDEO_STREAM_INFORMATION_DATA,
 };
 use tracing::*;
@@ -79,9 +79,11 @@ pub(crate) fn on_video_stream_information(
     video_streams.insert(topic.clone(), VideoStream::new(topic, camera));
 }
 
-/// Applies a recording command to the targeted stream and returns the MAVLink
-/// frames to publish in reply. Synchronous so the caller can drop the
-/// video-stream lock before awaiting the publishes.
+/// Applies a recording command to every addressed stream and returns the
+/// MAVLink frames to publish in reply. `target_system`/`target_component` of 0
+/// broadcast to all matching cameras (MAVLink all-systems / MAV_COMP_ID_ALL).
+/// Synchronous so the caller can drop the video-stream lock before awaiting
+/// the publishes.
 #[instrument(skip(video_streams, data, publisher))]
 #[allow(deprecated)]
 pub fn on_command_long(
@@ -89,17 +91,12 @@ pub fn on_command_long(
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
 ) -> Vec<Vec<u8>> {
-    let target = SystemAndComponent {
-        system_id: data.target_system,
-        component_id: data.target_component,
-    };
-
-    let Some(stream) = video_streams
-        .values_mut()
-        .find(|stream| stream.camera == target)
-    else {
-        return Vec::new();
-    };
+    match data.command {
+        MavCmd::MAV_CMD_VIDEO_START_CAPTURE
+        | MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE
+        | MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS => {}
+        _ => return Vec::new(),
+    }
 
     let params = [
         data.param1,
@@ -111,12 +108,46 @@ pub fn on_command_long(
         data.param7,
     ];
 
-    match data.command {
-        MavCmd::MAV_CMD_VIDEO_START_CAPTURE
-        | MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE
-        | MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS => {
-            stream.handle_command(data.command, params, publisher)
+    let mut replies = Vec::new();
+    for stream in video_streams.values_mut() {
+        if !is_addressed_to(
+            data.target_system,
+            data.target_component,
+            stream.camera.system_id,
+            stream.camera.component_id,
+        ) {
+            continue;
         }
-        _ => Vec::new(),
+        replies.extend(stream.handle_command(data.command, params, publisher));
+    }
+    replies
+}
+
+fn is_addressed_to(
+    target_system: u8,
+    target_component: u8,
+    our_system_id: u8,
+    our_component_id: u8,
+) -> bool {
+    let system_matches = target_system == 0 || target_system == our_system_id;
+    let component_matches = target_component == MavComponent::MAV_COMP_ID_ALL as u8
+        || target_component == our_component_id;
+    system_matches && component_matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_addressed_to_honors_broadcast_zero() {
+        assert!(is_addressed_to(1, 106, 1, 106));
+        assert!(is_addressed_to(1, 0, 1, 106));
+        assert!(is_addressed_to(0, 106, 1, 106));
+        assert!(is_addressed_to(0, 0, 1, 106));
+        assert!(!is_addressed_to(1, 107, 1, 106));
+        assert!(!is_addressed_to(2, 106, 1, 106));
+        assert!(!is_addressed_to(2, 0, 1, 106));
+        assert!(!is_addressed_to(0, 107, 1, 106));
     }
 }
