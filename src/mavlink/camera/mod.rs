@@ -79,13 +79,16 @@ pub(crate) fn on_video_stream_information(
     video_streams.insert(topic.clone(), VideoStream::new(topic, camera));
 }
 
+/// Applies a recording command to the targeted stream and returns the MAVLink
+/// frames to publish in reply. Synchronous so the caller can drop the
+/// video-stream lock before awaiting the publishes.
 #[instrument(skip(video_streams, data, publisher))]
 #[allow(deprecated)]
 pub fn on_command_long(
     data: &COMMAND_LONG_DATA,
     video_streams: &mut HashMap<String, VideoStream>,
     publisher: &Arc<Publisher<'static>>,
-) {
+) -> Vec<Vec<u8>> {
     let target = SystemAndComponent {
         system_id: data.target_system,
         component_id: data.target_component,
@@ -95,7 +98,7 @@ pub fn on_command_long(
         .values_mut()
         .find(|stream| stream.camera == target)
     else {
-        return;
+        return Vec::new();
     };
 
     let params = [
@@ -112,8 +115,8 @@ pub fn on_command_long(
         MavCmd::MAV_CMD_VIDEO_START_CAPTURE
         | MavCmd::MAV_CMD_VIDEO_STOP_CAPTURE
         | MavCmd::MAV_CMD_REQUEST_CAMERA_CAPTURE_STATUS => {
-            stream.handle_command(data.command, params, publisher);
+            stream.handle_command(data.command, params, publisher)
         }
-        _ => {}
+        _ => Vec::new(),
     }
 }

@@ -161,7 +161,15 @@ pub async fn handle_mavlink_message(
             let Some(data) = decode::<COMMAND_LONG_DATA>(&packet) else {
                 return;
             };
-            camera::on_command_long(&data, &mut video_streams.write().unwrap(), publisher);
+            let replies = {
+                let mut streams = video_streams.write().unwrap();
+                camera::on_command_long(&data, &mut streams, publisher)
+            };
+            for bytes in replies {
+                if let Err(error) = publisher.put(bytes).await {
+                    warn!(%error, "Failed to publish MAVLink message");
+                }
+            }
         }
         _ => trace!("Message skipped"),
     }
